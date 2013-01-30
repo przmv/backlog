@@ -1,0 +1,228 @@
+#!/usr/local/plan9/bin/rc
+
+path=($PLAN9/bin /bin /usr/bin)
+
+~ $#XDG_DATA_HOME 0 &&
+    datadir=$home/.local/share/backlog ||
+    datadir=$XDG_DATA_HOME/backlog
+
+if(test -e $datadir/*) {
+    all_projects=`{ls $datadir | awk -F/ '{ print $NF}'}
+}
+
+fs='	'
+
+fn add {
+    test -d $datadir || mkdir -p $datadir
+
+    switch($3) {
+        case h*
+            priority=1
+        case m*
+            priority=2
+        case l*
+            priority=3
+        case [1-3]
+            priority=$3
+    }
+
+    if(~ $#priority 0) {
+        priority=3
+        task=$*(3-)
+        task=$"task
+    }
+
+    if not {
+        task=$*(4-)
+        task=$"task
+    }
+
+    ~ $#task 0 && die 'No task message'
+
+    line=$priority^$fs^$task^$fs^`{date -n}
+    uid=`{echo $line | sha1sum}
+    line=$line^$fs^$uid
+    echo $line >>$datadir/$1
+}
+
+fn die {
+    echo $1 >[1=2]
+    exit 1
+}
+
+fn done {
+    project=$1
+    tasks=$*(3-)
+
+    ~ $#tasks 0 && show_tasks $project d
+
+    for(task in $tasks) {
+        uid=`{sort $datadir/$project | awk -F'\t' '
+        !/^d/ {
+            if(NR == ENVIRON["task"]) {
+                print $NF
+            }
+        }'}
+        if(! ~ $#uid 0) {
+            sed 's/^.*'$uid'$/d&/' $datadir/$project >$datadir/$project.tmp
+            mv $datadir/$project.tmp $datadir/$project
+        }
+    }
+}
+
+fn priority {
+    project=$2
+    pri=$1
+    tasks=$*(4-)
+
+    ~ $#tasks 0 && show_tasks $project $pri
+
+    for(task in $tasks) {
+        uid=`{sort $datadir/$project | awk -F'\t' '
+        !/^d/ {
+            if(NR == ENVIRON["task"]) {
+                print $NF
+            }
+        }'}
+        if(! ~ $#uid 0) {
+            sed 's/^[1-3](.*'$uid')$/'$pri'\1/' $datadir/$project >$datadir/$project.tmp
+            mv $datadir/$project.tmp $datadir/$project
+        }
+    }
+}
+
+fn show_project {
+    if(~ $#* 0) {
+        ~ $#all_projects 0 && die 'No projects in backlog' || die $"all_projects
+    }
+
+    ! ~ $1 $all_projects && usage
+
+    ntasks=`{grep -v '^d' $datadir/$1 | wc -l}
+    ~ $ntasks 0 && die 'No tasks in project'
+
+    show_tasks $1
+
+}
+
+fn show_tasks {
+    project=$1
+    filter=$2
+
+    {
+        if(~ $#filter 0) {
+            sort $datadir/$project | grep -v '^d'
+        }
+
+        if not {
+            sort $datadir/$project | grep '^'$filter
+        }
+    } | awk -F'\t' '
+    # Get output from command. Close pipe
+    function cmd(cmd) {
+        cmd | getline output
+        close(cmd)
+        return output
+    }
+    # Add trailing spaces to workaround printf counting bytes instead of
+    # runes
+    function addtrail(s, l) {
+        s = cmd("echo -n "s"|sed \"s/[ \t]*$//\"")
+        sl = cmd("echo -n "s"|wc -r")
+        tl = l - sl
+        trail = sprintf("%"tl"s", "");
+        s = s trail
+        return s
+    }
+    BEGIN {
+        nrlen = 6
+        prlen = 9
+        datelen = length(cmd("date"))
+        columns = cmd("tput cols")
+        tasklen = columns - nrlen - prlen - datelen - 3
+        priority[1] = "High"
+        priority[2] = "Medium"
+        priority[3] = "Low"
+    }
+    {
+        task = cmd("echo -n "$2"| fmt -l "tasklen" | sed q")
+        date = cmd("date "$3)
+        if ($1 ~ /^d/)
+            pri= "Done"
+        else
+            pri= priority[$1]
+
+        if ($1 == 1)
+            printf("\033[1;30m\033[1;41m")
+        else if ($1 == 2)
+            printf("\033[1;30m\033[1;43m")
+        else
+            printf("\033[1;37m\033[1;40m")
+
+        printf("%3d │ %-6s │ %s │ %s\033[0m\n",
+                NR, pri, addtrail(task, tasklen), date)
+        c = "echo -n " $2 "| fmt -l "tasklen" | tail +2"
+        while (c | getline task) {
+            printf("│ %3s │ %-6s │ %s │ %"datelen"s │\n",
+                "", "", addtrail(task, tasklen), "")
+        }
+        close(c)
+    }'
+
+}
+
+fn undone {
+    project=$1
+    tasks=$*(3-)
+
+    ~ $#tasks 0 && show_tasks $project
+
+    for(task in $tasks) {
+        uid=`{sort $datadir/$project | awk -F'\t' '
+        /^d/ {
+            if(NR == ENVIRON["task"]) {
+                print $NF
+            }
+        }'}
+        if(! ~ $#uid 0) {
+            sed 's/^d(.*'$uid')$/\1/' $datadir/$project >$datadir/$project.tmp
+            mv $datadir/$project.tmp $datadir/$project
+        }
+    }
+}
+
+fn usage {
+    die 'usage: backlog [<project>] [a[dd] [<priority>] <message>]
+                           [d[one] <task-number>]
+                           [u[ndone] <task-number>]
+                           [h[igh] <task-number>]
+                           [m[edium] <task-number>]
+                           [l[ow] <task-number>]'
+}
+
+switch($#*) {
+case [0-1]
+    show_project $*
+case *
+    switch($2) {
+    # Add
+    case a*
+        add $*
+    # Done
+    case d*
+        done $*
+    case u*
+        undone $*
+    # Set High priority
+    case h*
+        priority 1 $*
+    # Set Medium priority
+    case m*
+        priority 2 $*
+    # Set Low priority
+    case l*
+        priority 3 $*
+    }
+}
+
+# vim: ft=rc
